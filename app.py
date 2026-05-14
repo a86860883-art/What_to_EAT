@@ -16,13 +16,14 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from session import load as load_session, save as save_session, clear_quiz
 from nearby_hot import get_nearby_hot, build_nearby_hot_flex
 from time_utils import get_tw_now, get_default_meal, build_time_greeting, get_quick_reply_meals, MEAL_CONFIG
-from maps_client import nearby_search, enrich_parking, random_nearby
+from maps_client import nearby_search, enrich_details, random_nearby
 from recommender import get_recommendation, get_random_category
 from flex_message import (
     build_recommendation_carousel,
     build_random_category_message,
     build_random_place_message,
-    build_quiz_question,
+    build_quiz_card,
+    build_quiz_question,  # backward compat alias
 )
 
 app = FastAPI()
@@ -428,7 +429,7 @@ async def run_recommendation(user_id: str, session: dict):
         distance_pref = quiz.get("distance") or "mid"
 
         places = await nearby_search(loc["lat"], loc["lng"], meal_id, distance_pref)
-        places = await enrich_parking(places)
+        places = await enrich_details(places)
 
         recommendations = await get_recommendation(session, places)
 
@@ -457,7 +458,7 @@ async def handle_follow(user_id: str, reply_token: str):
 # ── LINE API 工具函式 ────────────────────────────────────────
 def _make_quiz_msg(step: int) -> dict:
     s = QUIZ_STEPS[step - 1]
-    return build_quiz_question(s[0], s[1], s[2])
+    return build_quiz_card(s[0], s[1], s[2])
 
 
 async def reply_messages(reply_token: str, messages: list[dict]):
