@@ -169,6 +169,27 @@ async def handle_text(user_id: str, reply_token: str, text: str):
         await handle_quiz_answer(user_id, reply_token, text, session)
         return
 
+    # ── 開始推薦（Rich Menu 觸發） ──
+    if text in ("__START__", "開始推薦"):
+        await reply_messages(reply_token, [
+            {
+                "type": "text",
+                "text": "請傳送你目前的位置 📍\n\n點擊下方按鈕 → 傳送位置",
+                "quickReply": {
+                    "items": [
+                        {
+                            "type": "action",
+                            "action": {
+                                "type": "location",
+                                "label": "📍 傳送我的位置"
+                            }
+                        }
+                    ]
+                }
+            }
+        ])
+        return
+
     # ── 附近熱門 ──
     if text in ("__NEARBY_HOT__", "附近熱門"):
         loc = session.get("last_location")
