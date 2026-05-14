@@ -83,6 +83,9 @@ async def test():
 
 
 # ── Webhook ─────────────────────────────────────────────────
+@app.get("/webhook")
+async def webhook_verify():
+    return {"status": "ok"}
 @app.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
