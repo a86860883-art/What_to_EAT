@@ -14,6 +14,7 @@ import httpx
 from fastapi import FastAPI, Request, BackgroundTasks
 
 from session import load as load_session, save as save_session, clear_quiz
+from nearby_hot import get_nearby_hot, build_nearby_hot_flex
 from time_utils import get_tw_now, get_default_meal, build_time_greeting, get_quick_reply_meals, MEAL_CONFIG
 from maps_client import nearby_search, enrich_parking, random_nearby
 from recommender import get_recommendation, get_random_category
@@ -76,6 +77,10 @@ QUIZ_STEPS = [
 async def health():
     return {"status": "running"}
 
+@app.get("/webhook")
+async def webhook_verify():
+    return {"status": "ok"}
+
 
 @app.get("/test")
 async def test():
@@ -83,9 +88,6 @@ async def test():
 
 
 # ── Webhook ─────────────────────────────────────────────────
-@app.get("/webhook")
-async def webhook_verify():
-    return {"status": "ok"}
 @app.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
@@ -165,6 +167,131 @@ async def handle_text(user_id: str, reply_token: str, text: str):
     # ── 問卷回答 ──
     if text.startswith("__ANS__"):
         await handle_quiz_answer(user_id, reply_token, text, session)
+        return
+
+    # ── 附近熱門 ──
+    if text in ("__NEARBY_HOT__", "附近熱門"):
+        loc = session.get("last_location")
+        if not loc:
+            await reply_messages(reply_token, [
+                {"type": "text", "text": "請先傳送你的位置，我才能找附近的店 📍"}
+            ])
+            return
+        await reply_messages(reply_token, [{"type": "text", "text": "搜尋附近高評分餐廳中 🔥"}])
+        places = await get_nearby_hot(loc["lat"], loc["lng"], radius=1000)
+        flex = build_nearby_hot_flex(places)
+        await push_messages(user_id, [flex])
+        return
+
+    if text == "熱門 2km":
+        loc = session.get("last_location")
+        if not loc:
+            await reply_messages(reply_token, [{"type": "text", "text": "請先傳送位置 📍"}])
+            return
+        await reply_messages(reply_token, [{"type": "text", "text": "擴大到 2km 搜尋中..."}])
+        places = await get_nearby_hot(loc["lat"], loc["lng"], radius=2000)
+        flex = build_nearby_hot_flex(places)
+        await push_messages(user_id, [flex])
+        return
+
+    # ── 飲食禁忌選單 ──
+    if text in ("__TABOO_MENU__", "飲食禁忌"):
+        cats = session["taboo"]["categories"]
+        specific = session["taboo"]["specific_foods"]
+        custom = session["taboo"]["custom"]
+        lines = []
+        if cats:     lines.append("類別：" + "、".join(cats))
+        if specific: lines.append("食物：" + "、".join(specific))
+        if custom:   lines.append("自訂：" + "、".join(custom))
+        current = "\n".join(lines) or "（尚未設定）"
+        msg = f"""⭐ 飲食禁忌設定
+
+目前設定：
+{current}
+
+── 類別禁忌（傳對應指令開關）──
+傳「禁忌 pork」→ 不吃豬肉
+傳「禁忌 beef」→ 不吃牛肉
+傳「禁忌 chicken」→ 不吃雞肉
+傳「禁忌 seafood」→ 不吃海鮮（全）
+傳「禁忌 rawfish」→ 不吃生魚片
+傳「禁忌 rawshrimp」→ 不吃生蝦
+傳「禁忌 shellfish」→ 不吃貝類
+傳「禁忌 spicy」→ 不吃辣
+傳「禁忌 vegan」→ 純素
+傳「禁忌 egg」→ 不吃蛋
+傳「禁忌 peanut」→ 不吃花生
+傳「禁忌 coriander」→ 不吃香菜
+（重複傳相同指令可取消）
+
+── 自訂禁忌 ──
+傳「加禁忌 食材名稱」，例如：加禁忌 大蒜
+
+── 清除全部 ──
+傳「清除禁忌」"""
+        await reply_messages(reply_token, [{"type": "text", "text": msg}])
+        return
+
+    if text.startswith("禁忌 "):
+        cat_id = text[3:].strip()
+        cats = session["taboo"]["categories"]
+        if cat_id in cats:
+            cats.remove(cat_id)
+            save_session(user_id, session)
+            await reply_messages(reply_token, [{"type": "text", "text": f"已移除禁忌：{cat_id} ✅"}])
+        else:
+            cats.append(cat_id)
+            save_session(user_id, session)
+            await reply_messages(reply_token, [{"type": "text", "text": f"已加入禁忌：{cat_id} ✅\n傳同樣指令可取消。"}])
+        return
+
+    if text.startswith("加禁忌 "):
+        val = text[4:].strip()
+        if val and val not in session["taboo"]["custom"]:
+            session["taboo"]["custom"].append(val)
+            save_session(user_id, session)
+        await reply_messages(reply_token, [{"type": "text", "text": f"已加入自訂禁忌：{val} ✅"}])
+        return
+
+    if text == "清除禁忌":
+        session["taboo"] = {"categories": [], "specific_foods": [], "custom": []}
+        save_session(user_id, session)
+        await reply_messages(reply_token, [{"type": "text", "text": "已清除所有飲食禁忌設定 ✅"}])
+        return
+
+    # ── 使用說明 ──
+    if text in ("__HELP__", "使用說明"):
+        help_msg = """❓ 使用說明
+
+【主要功能】
+📍 開始推薦
+傳送位置 → 選時段 → 回答 7 題問卷
+→ 收到 3–5 間推薦（含地圖連結與停車資訊）
+
+🎲 隨機類別
+直接給你一個食物方向，不用思考
+
+🎯 隨機餐廳
+根據你的位置，隨機抽一間評分 4.0 以上的店
+
+🔥 附近熱門
+搜尋 1km 內評分最高的餐廳，無需問卷
+
+⭐ 飲食禁忌
+設定不吃的食物或食材，每次推薦自動排除
+
+【常用指令】
+・傳「附近熱門」→ 搜尋附近高評分店家
+・傳「熱門 2km」→ 擴大到 2km 搜尋
+・傳「飲食禁忌」→ 查看與設定禁忌
+・傳「禁忌 spicy」→ 開關不吃辣設定
+・傳「加禁忌 香菜」→ 加入自訂食材禁忌
+・傳「清除禁忌」→ 清空所有禁忌
+
+【推薦卡片說明】
+每張卡片包含：
+店名、類別、推薦原因、距離、地址、停車資訊、Google Maps 導航"""
+        await reply_messages(reply_token, [{"type": "text", "text": help_msg}])
         return
 
     # ── 隨機功能 ──
